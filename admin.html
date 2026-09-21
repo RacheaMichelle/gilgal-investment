@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Admin — Gilgal Investments</title>
+<meta name="robots" content="noindex, nofollow">
+<link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@600;800;900&family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<!-- LOGIN SCREEN -->
+<div id="loginScreen">
+  <div class="admin-login">
+    <h2>🔐 Admin Login</h2>
+    <input type="email" id="adminEmail" placeholder="Admin email">
+    <input type="password" id="adminPass" placeholder="Password">
+    <button onclick="doLogin()">Log In</button>
+    <p id="loginMsg" style="text-align:center; color:#dc3545; margin-top:15px; font-size:0.9rem;"></p>
+  </div>
+</div>
+
+<!-- ADMIN DASHBOARD -->
+<div id="adminPanel" style="display:none;">
+  <div class="admin-header">
+    <h1>📋 Review Management</h1>
+    <button class="logout-btn" onclick="doLogout()">Log Out</button>
+  </div>
+
+  <div class="admin-stats">
+    <div class="admin-stat"><h3 id="statPending">0</h3><p>Pending</p></div>
+    <div class="admin-stat"><h3 id="statApproved">0</h3><p>Approved</p></div>
+    <div class="admin-stat"><h3 id="statTotal">0</h3><p>Total</p></div>
+    <div class="admin-stat"><h3 id="statAvg">0.0</h3><p>Avg Rating</p></div>
+  </div>
+
+  <div style="max-width: 1100px; margin: 0 auto 20px; padding: 0 20px; display: flex; gap: 10px; flex-wrap: wrap;">
+    <button onclick="loadAdminReviews('pending')" class="btn-approve" style="background:#ffc107; color:#000;">Pending</button>
+    <button onclick="loadAdminReviews('approved')" class="btn-approve">Approved</button>
+    <button onclick="loadAdminReviews('all')" class="btn-approve" style="background:#1B2A4A;">All</button>
+  </div>
+
+  <div class="admin-reviews" id="adminReviews"></div>
+</div>
+
+<script type="module">
+import { 
+  db, auth,
+  collection, getDocs, query, where, orderBy, doc, updateDoc, deleteDoc,
+  signInWithEmailAndPassword, signOut, onAuthStateChanged
+} from './js/firebase-config.js';
+
+let currentFilter = 'all';
+
+/* LOGIN */
+window.doLogin = async function() {
+  const email = document.getElementById('adminEmail').value;
+  const pass = document.getElementById('adminPass').value;
+  const msg = document.getElementById('loginMsg');
+  msg.textContent = 'Logging in...';
+  try {
+    await signInWithEmailAndPassword(auth, email, pass);
+  } catch (err) {
+    msg.textContent = '❌ ' + (err.message || 'Login failed');
+  }
+};
+
+window.doLogout = async function() {
+  await signOut(auth);
+};
+
+/* AUTH STATE */
+onAuthStateChanged(auth, (user) => {
+  if (user) {
+    document.getElementById('loginScreen').style.display = 'none';
+    document.getElementById('adminPanel').style.display = 'block';
+    loadAdminReviews('all');
+  } else {
+    document.getElementById('loginScreen').style.display = 'block';
+    document.getElementById('adminPanel').style.display = 'none';
+  }
+});
+
+/* LOAD REVIEWS */
+window.loadAdminReviews = async function(filter) {
+  currentFilter = filter;
+  const container = document.getElementById('adminReviews');
+  container.innerHTML = '<p class="no-reviews">Loading...</p>';
+
+  try {
+    let q;
+    if (filter === 'all') {
+      q = query(collection(db, 'reviews'), orderBy('createdAt', 'desc'));
+    } else {
+      q = query(
+        collection(db, 'reviews'),
+        where('status', '==', filter),
+        orderBy('createdAt', 'desc')
+      );
+    }
+
+    const snap = await getDocs(q);
+    const allSnap = await getDocs(collection(db, 'reviews'));
+    
+    // Update stats
+    let pending = 0, approved = 0, total = allSnap.size, ratingSum = 0;
+    allSnap.forEach(d => {
+      const r = d.data();
+      if (r.status === 'pending') pending++;
+      if (r.status === 'approved') approved++;
+      ratingSum += r.rating || 0;
+    });
+    document.getElementById('statPending').textContent = pending;
+    document.getElementById('statApproved').textContent = approved;
+    document.getElementById('statTotal').textContent = total;
+    document.getElementById('statAvg').textContent = total ? (ratingSum / total).toFixed(1) : '0.0';
+
+    if (snap.empty) {
+      container.innerHTML = `<p class="no-reviews">No ${filter} reviews.</p>`;
+      return;
+    }
+
+    let html = '';
+    snap.forEach(docSnap => {
+      const r = docSnap.data();
+      const id = docSnap.id;
+      const stars = '★'.repeat(r.rating) + '☆'.repeat(5 - r.rating);
+      const date = r.createdAt?.toDate?.()?.toLocaleDateString?.('en-GB', {
+        year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+      }) || 'Just now';
+
+      const isApproved = r.status === 'approved';
+
+      html += `
+        <div class="admin-card ${isApproved ? 'approved' : ''}">
+          <div class="stars">${stars} (${r.rating}/5)</div>
+          <p class="review-text">"${r.review}"</p>
+          <div class="meta">
+            <strong>${r.name}</strong>${r.phone ? ' • 📞 ' + r.phone : ''}<br>
+            Service: <strong>${r.service}</strong><br>
+            <em>${date}</em> • Status: <strong>${r.status}</strong>
+          </div>
+          <div class="actions">
+            ${!isApproved ? `<button class="btn-approve" onclick="approveReview('${id}')">✅ Approve</button>` : ''}
+            <button class="btn-reject" onclick="deleteReview('${id}')">🗑️ Delete</button>
+            ${r.phone ? `<a href="https://wa.me/256${r.phone.replace(/^0/, '').replace(/\s/g, '')}" target="_blank" class="btn-whatsapp">💬 WhatsApp</a>` : ''}
+          </div>
+        </div>
+      `;
+    });
+    container.innerHTML = html;
+  } catch (err) {
+    console.error(err);
+    container.innerHTML = `<p class="no-reviews">Error: ${err.message}</p>`;
+  }
+};
+
+/* APPROVE */
+window.approveReview = async function(id) {
+  if (!confirm('Approve this review? It will appear publicly on the website.')) return;
+  try {
+    await updateDoc(doc(db, 'reviews', id), { status: 'approved' });
+    loadAdminReviews(currentFilter);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+};
+
+/* DELETE */
+window.deleteReview = async function(id) {
+  if (!confirm('Delete this review permanently? This cannot be undone.')) return;
+  try {
+    await deleteDoc(doc(db, 'reviews', id));
+    loadAdminReviews(currentFilter);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+};
+</script>
+</body>
+</html>
